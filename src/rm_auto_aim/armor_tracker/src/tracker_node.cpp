@@ -151,31 +151,19 @@ ArmorTrackerNode::ArmorTrackerNode(const rclcpp::NodeOptions & options)
 
   // Subscriber with tf2 message_filter
   // tf2 relevant
-  target_frame_ = this->declare_parameter("target_frame", "odom");
-  int queue_size = this->declare_parameter("queue_size", 10); 
-  double tf_cache_time = this->declare_parameter("tf_cache_time", 1.0);
-
-  // 设置TF缓存时间
-  tf2_buffer_ = std::make_shared<tf2_ros::Buffer>(
-    this->get_clock(), 
-    tf2::durationFromSec(tf_cache_time));
-    
+  tf2_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
   // Create the timer interface before call to waitForTransform,
   // to avoid a tf2_ros::CreateTimerInterfaceException exception
   auto timer_interface = std::make_shared<tf2_ros::CreateTimerROS>(
     this->get_node_base_interface(), this->get_node_timers_interface());
   tf2_buffer_->setCreateTimerInterface(timer_interface);
   tf2_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf2_buffer_);
-  
   // subscriber and filter
   armors_sub_.subscribe(this, "/detector/armors", rmw_qos_profile_sensor_data);
-
+  target_frame_ = this->declare_parameter("target_frame", "odom");
   tf2_filter_ = std::make_shared<tf2_filter>(
-    armors_sub_, *tf2_buffer_, target_frame_, queue_size,
-    this->get_node_logging_interface(),
-    this->get_node_clock_interface(), 
-    tf2::durationFromSec(1.0));
-    
+    armors_sub_, *tf2_buffer_, target_frame_, 10, this->get_node_logging_interface(),
+    this->get_node_clock_interface(), std::chrono::duration<int>(1));
   // Register a callback with tf2_ros::MessageFilter to be called when transforms are available
   tf2_filter_->registerCallback(&ArmorTrackerNode::armorsCallback, this);
 
@@ -214,65 +202,22 @@ ArmorTrackerNode::ArmorTrackerNode(const rclcpp::NodeOptions & options)
   armor_marker_.color.a = 1.0;
   armor_marker_.color.r = 1.0;
   marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("/tracker/marker", 10);
-    // 订阅CAN数据
-  robot_status_sub_ = this->create_subscription<auto_aim_interfaces::msg::RobotStatus>(
-      "/robot_status", 10, 
-      [this](const auto_aim_interfaces::msg::RobotStatus::SharedPtr msg) {
-          std::lock_guard<std::mutex> lock(robot_state_mutex_);
-          current_yaw_ = msg->yaw;
-          current_pitch_ = msg->pitch;
-          robot_state_timestamp_ = msg->header.stamp;
-          RCLCPP_DEBUG(this->get_logger(), "Received robot state: yaw=%.3f, pitch=%.3f", 
-                       current_yaw_, current_pitch_);
-      });
 }
 
 void ArmorTrackerNode::armorsCallback(const auto_aim_interfaces::msg::Armors::SharedPtr armors_msg)
 {
-  // 添加调试信息：打印消息时间戳与当前TF缓存范围
-RCLCPP_INFO(this->get_logger(),
-  "[DEBUG] armor_msg time: sec=%d, nanosec=%u",
-  armors_msg->header.stamp.sec,
-  armors_msg->header.stamp.nanosec);
-
-auto now = this->now();
-RCLCPP_INFO(this->get_logger(),
-  "[DEBUG] now: sec=%f, nanosec=%ld",
-  now.seconds(), now.nanoseconds());
-    
-  // 获取tf_cache_time参数值用于显示缓存窗口
-  double tf_cache_time = this->get_parameter("tf_cache_time").as_double();
-  RCLCPP_INFO(this->get_logger(),
-    "[DEBUG] TF cache window: [%.3f s ago, now]",
-    tf_cache_time);
-
-  armors_msg->header.stamp = this->now();
-  if (armors_msg->header.stamp.sec == 0 && armors_msg->header.stamp.nanosec == 0) {
-    RCLCPP_DEBUG(this->get_logger(), "Received message with invalid timestamp, ignoring");
-    return;
-  }
-
   // Tranform armor position from image frame to world coordinate
-for (auto & armor : armors_msg->armors) {
-  geometry_msgs::msg::PoseStamped ps;
-  ps.header = armors_msg->header;
-  ps.pose = armor.pose;
-  try {
-    // 使用最新的可用TF变换而不是精确时间戳的变换
-    geometry_msgs::msg::TransformStamped transformStamped = tf2_buffer_->lookupTransform(
-      target_frame_, ps.header.frame_id, tf2::TimePointZero);
-    // 使用最新变换的时间戳更新消息头
-    ps.header.stamp = transformStamped.header.stamp;
-    tf2::doTransform(ps, ps, transformStamped);
-    armor.pose = ps.pose;
-  } catch (const tf2::ExtrapolationException & ex) {
-    RCLCPP_WARN(get_logger(), "Transform warning: %s", ex.what());
-    return;
-  } catch (const tf2::TransformException & ex) {
-    RCLCPP_WARN(get_logger(), "Transform error: %s", ex.what());
-    return;
+  for (auto & armor : armors_msg->armors) {
+    geometry_msgs::msg::PoseStamped ps;
+    ps.header = armors_msg->header;
+    ps.pose = armor.pose;
+    try {
+      armor.pose = tf2_buffer_->transform(ps, target_frame_).pose;
+    } catch (const tf2::ExtrapolationException & ex) {
+      RCLCPP_ERROR(get_logger(), "Error while transforming %s", ex.what());
+      return;
+    }
   }
-}
 
   // Filter abnormal armors
   armors_msg->armors.erase(

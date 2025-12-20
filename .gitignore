@@ -1,0 +1,33 @@
+# ROS2 构建产物
+build/
+install/
+log/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# C++
+*.o
+*.obj
+*.so
+*.dylib
+*.exe
+*.out
+*.app
+*.dSYM/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 其他
+.DS_Store
+*.bag
+*.db3
