@@ -56,7 +56,10 @@ SerialDriverNode::SerialDriverNode(const rclcpp::NodeOptions& options)
 	    "/tracker/target", 
 	    rclcpp::SensorDataQoS(),
 	    std::bind(&SerialDriverNode::targetCallback, this, std::placeholders::_1));
-    
+    	cmd_vel_sub_ = this->create_subscription<geometry_msgs::msg::Twist>(
+	    "/cmd_vel", 
+	     10,
+	     std::bind(&SerialDriverNode::cmdVelCallback, this, std::placeholders::_1));
     // ========================================
     // 創建發布者
     // ========================================
@@ -86,6 +89,9 @@ SerialDriverNode::SerialDriverNode(const rclcpp::NodeOptions& options)
         // 啟動接收線程
         receive_thread_ = std::thread(&SerialDriverNode::receiveLoop, this);
         
+        // 启动发送线程 
+        send_thread_ = std::thread(&SerialDriverNode::sendLoop, this);
+        
     } catch (const std::exception& e) {
         RCLCPP_ERROR(this->get_logger(), "❌ 串口初始化失敗: %s", e.what());
         return;
@@ -108,6 +114,10 @@ SerialDriverNode::~SerialDriverNode() {
     
     if (receive_thread_.joinable()) {
         receive_thread_.join();
+    }
+    
+    if (send_thread_.joinable()) {
+    send_thread_.join();
     }
     
     if (serial_port_ && serial_port_->isOpen()) {
@@ -228,16 +238,13 @@ void SerialDriverNode::targetCallback(
     int8_t fire_cmd = msg->tracking ? 1 : 0;
     
     RCLCPP_INFO(this->get_logger(),
-    "📤 发送绝对角度: pitch=%.2f° yaw=%.2f° fire=%d",
+    " pitch=%.2f° yaw=%.2f° fire=%d",
     pitch_deg, yaw_deg, fire_cmd);
     
-    auto packet = Protocol::packActionData(pitch_deg, yaw_deg, fire_cmd);
-    
-    try {
-        serial_port_->write(packet.data(), packet.size());
-    } catch (const std::exception& e) {
-        RCLCPP_ERROR(this->get_logger(), "串口發送失敗: %s", e.what());
-    }
+    latest_gimbal_cmd_.pitch = pitch_deg;
+    latest_gimbal_cmd_.yaw = yaw_deg;
+    latest_gimbal_cmd_.fire = fire_cmd;
+    has_gimbal_cmd_.store(true, std::memory_order_release);
 }
 
 void SerialDriverNode::receiveLoop() {
@@ -334,6 +341,63 @@ void SerialDriverNode::broadcastTransform() {
     transform.transform.translation.z = 0.0;
     
     tf_broadcaster_->sendTransform(transform);
+}
+
+void SerialDriverNode::cmdVelCallback(
+    const geometry_msgs::msg::Twist::SharedPtr msg) {
+    
+    latest_chassis_cmd_.vx = static_cast<float>(msg->linear.x);
+    latest_chassis_cmd_.vy = static_cast<float>(msg->linear.y);
+    latest_chassis_cmd_.wz = static_cast<float>(msg->angular.z);
+    has_chassis_cmd_.store(true, std::memory_order_release);
+}
+
+void SerialDriverNode::sendLoop() {
+    RCLCPP_INFO(this->get_logger(), "发送线程已启动");
+    
+    using namespace std::chrono;
+    auto period = milliseconds(5);  // 200Hz
+    auto next_time = steady_clock::now() + period;
+    
+    while (running_ && rclcpp::ok()) {
+        // 发送云台指令（如果有）
+        if (has_gimbal_cmd_.load(std::memory_order_acquire)) {
+            auto packet = Protocol::packActionData(
+                latest_gimbal_cmd_.pitch,
+                latest_gimbal_cmd_.yaw,
+                latest_gimbal_cmd_.fire
+            );
+            
+            try {
+                serial_port_->write(packet.data(), packet.size());
+            } catch (const std::exception& e) {
+                RCLCPP_ERROR_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                    "云台指令发送失败: %s", e.what());
+            }
+        }
+        
+        // 发送底盘指令（如果有）
+        if (has_chassis_cmd_.load(std::memory_order_acquire)) {
+            auto packet = Protocol::packNavData(
+                latest_chassis_cmd_.vx,
+                latest_chassis_cmd_.vy,
+                latest_chassis_cmd_.wz
+            );
+            
+            try {
+                serial_port_->write(packet.data(), packet.size());
+            } catch (const std::exception& e) {
+                RCLCPP_ERROR_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                    "底盘指令发送失败: %s", e.what());
+            }
+        }
+        
+        // 精确定时
+        std::this_thread::sleep_until(next_time);
+        next_time += period;
+    }
+    
+    RCLCPP_INFO(this->get_logger(), "发送线程已停止");
 }
 
 } // namespace rm_serial_driver

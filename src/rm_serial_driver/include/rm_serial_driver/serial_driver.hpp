@@ -15,6 +15,7 @@
 #include "sensor_msgs/msg/joint_state.hpp"
 #include "geometry_msgs/msg/point_stamped.hpp"
 #include "geometry_msgs/msg/transform_stamped.hpp"
+#include "geometry_msgs/msg/twist.hpp"
 
 #include "rm_serial_driver/protocol.hpp"
 #include "rm_serial_driver/ballistic_solver.hpp"
@@ -62,16 +63,52 @@ private:
     void receiveLoop();
     
     /**
+     * @brief 串口發送線程函數
+     */
+    void sendLoop();
+    
+    /**
      * @brief TF廣播定時器回調
      */
     void broadcastTransform();
+    
+    /**
+    * @brief 底盘速度指令回调函数
+    * @param msg 速度指令消息
+    */
+    void cmdVelCallback(const geometry_msgs::msg::Twist::SharedPtr msg);
+    
+    
+     // ========================================
+    // 数据结构
+    // ========================================
+    struct GimbalCmd {
+        float pitch;
+        float yaw;
+        int8_t fire;
+    };
+    
+    struct ChassisCmd {
+        float vx;
+        float vy;
+        float wz;
+    };
     
     // ========================================
     // 串口相關
     // ========================================
     std::unique_ptr<serial::Serial> serial_port_;  ///< 串口對象
     std::thread receive_thread_;                   ///< 接收線程
+    std::thread send_thread_;                      ///< 发送线程
     std::atomic<bool> running_{true};              ///< 運行標誌
+    
+    // ========================================
+   // 发送线程相关
+   // ========================================
+    std::atomic<bool> has_gimbal_cmd_{false};
+    std::atomic<bool> has_chassis_cmd_{false};
+    GimbalCmd latest_gimbal_cmd_;
+    ChassisCmd latest_chassis_cmd_;
     
     // ========================================
     // 彈道解算器
@@ -91,6 +128,7 @@ private:
     // ========================================
     rclcpp::Subscription<auto_aim_interfaces::msg::Target>::SharedPtr target_sub_;
     
+    rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_sub_;
     // ========================================
     // ROS2發布者
     // ========================================

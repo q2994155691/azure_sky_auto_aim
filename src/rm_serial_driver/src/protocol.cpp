@@ -93,5 +93,32 @@ bool Protocol::verifyCRC(const uint8_t* data, size_t len) {
     return calc_crc == recv_crc;
 }
 
+uint8_t Protocol::calculate_xor_checksum(const uint8_t* data, size_t len) {
+    uint8_t checksum = 0;
+    for (size_t i = 0; i < len; i++) {
+        checksum ^= data[i];
+    }
+    return checksum;
+}
+
+std::vector<uint8_t> Protocol::packNavData(float vx, float vy, float wz) {
+    std::vector<uint8_t> packet(18);
+    
+    packet[0] = 0xAA;
+    packet[1] = 0x55;
+    packet[2] = 0x03;
+    packet[3] = 12;
+    
+    std::memcpy(&packet[4], &vx, sizeof(float));
+    std::memcpy(&packet[8], &vy, sizeof(float));
+    std::memcpy(&packet[12], &wz, sizeof(float));
+    
+    uint8_t checksum = calculate_xor_checksum(&packet[2], 14);
+    packet[16] = checksum;
+    packet[17] = 0xFE;
+    
+    return packet;
+}
+
 } // namespace rm_serial_driver
 

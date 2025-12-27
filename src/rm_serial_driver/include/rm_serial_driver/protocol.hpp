@@ -5,7 +5,7 @@
 #include <array>
 #include <string>
 #include <cstring>
-
+#include <vector>
 
 namespace rm_serial_driver {
 
@@ -46,6 +46,8 @@ public:
      */
     static uint32_t stm32_crc32(const uint8_t* data, size_t len);
     
+    // 日後統一用crc32
+    static uint8_t calculate_xor_checksum(const uint8_t* data, size_t len);
     /**
      * @brief 打包發送命令
      * @param pitch 目標俯仰角（度）
@@ -65,6 +67,7 @@ public:
     static bool parsePresentData(
         const std::array<uint8_t, 16>& buffer, PresentData& output);
     
+    static std::vector<uint8_t> packNavData(float vx, float vy, float wz);
     /**
      * @brief 驗證CRC校驗碼
      * @param data 數據指針（至少16字節）
